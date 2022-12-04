@@ -1,0 +1,912 @@
+---
+title: "Pub Bias"
+author: "Mona Ascha"
+date: "`Last Edited r format(Sys.time(), '%d %B %Y'`"
+output: html_document
+---
+
+##Loading packages
+
+```{r}
+
+library(ggplot2)
+library(tidyverse)
+library(knitr)
+library(dplyr)
+library(statsr)
+library(tableone)
+library(forcats)
+library(pander)
+library(Hmisc)
+library(reshape2)
+library(lubridate)
+library(metafor)
+library(metasens)
+
+```
+
+##Loading data
+
+```{r}
+#Will need to change filepath 
+filepath <- "/Users/mona/Desktop/Research/Publication Bias/Data/FORANALYSIS.xlsx"
+data <- readxl::read_excel(filepath)
+
+#Duplicate data just in case
+DATA <- data
+
+```
+
+##Checking if every two rows are equal to make sure SW and LK coded identically
+
+```{r}
+positions <- c(3:30)
+test <- data %>% select(positions) %>% unique()
+test <- test %>% group_by(ID) %>% filter(n()>1)
+
+#Great, we have made sure that each row is a duplicate 
+
+```
+
+##Get rid of duplicate rows, get rid of columns we don't need, get rid of excluded studies
+```{r}
+
+data <- data %>% filter(Coder == "LK") 
+data <- data[,-c(1,2)]
+excluded <- data %>% filter(Include == "No -- Continue to question 7")
+datafinal <- data %>% filter(Include == "Yes -- Continue to question 8")
+
+#Clean up some variables we don't need from datafinal
+
+toremove <- c("Include", "why_exclude", "reason_exclude", "Issues")
+datafinal <- select(datafinal, -toremove)
+
+```
+
+##Exclusion table
+```{r}
+
+exclude_variables <- c("Journal", "why_exclude", "reason_exclude")
+
+excludedtable <-  print(
+                  CreateTableOne(vars = exclude_variables, 
+                        data = excluded, 
+                        includeNA = TRUE), 
+                        showAllLevels = F,
+                        nonnormal = row_variables,
+                        width = 1000)
+
+kable(excludedtable)
+
+```
+
+
+##Cleaning up some variables
+```{r}
+
+#We need to parse out cells that have multiple pieces of data into their own columns
+
+datafinal <- datafinal %>% mutate(begg = ifelse(grepl("rank correlation", datafinal$pb_methods_used, ignore.case = T), "Yes", "No"),
+                                  egger = ifelse(grepl("Egger", datafinal$pb_methods_used, ignore.case = T), "Yes", "No"),
+                                  funnel = ifelse(grepl("Funnel", datafinal$pb_methods_used, ignore.case = T), "Yes", "No"),
+                                  peter = ifelse(grepl("Peter", datafinal$pb_methods_used, ignore.case = T), "Yes", "No"),
+                                  failsafeN = ifelse(grepl("failsafe", datafinal$pb_methods_used, ignore.case = T), "Yes", "No"),
+                                  trimfill = ifelse(grepl("Duval", datafinal$pb_methods_used, ignore.case = T), "Yes", "No"),
+                                  wood = ifelse(grepl("wood", datafinal$pb_methods_used, ignore.case = T), "Yes", "No"),
+                                  mazumdar = ifelse(grepl("Mazumdar", datafinal$pb_methods_used, ignore.case = T), "Yes", "No"),
+                                  fo = ifelse(grepl("F0", datafinal$pb_methods_used, ignore.case = T), "Yes", "No"),
+                                  cochrane = ifelse(grepl("cochrane", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  moose = ifelse(grepl("moose", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  pico = ifelse(grepl("pico", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  prisma = ifelse(grepl("prisma", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  potsdam = ifelse(grepl("potsdam", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  amstar = ifelse(grepl("amstar", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  comet = ifelse(grepl("comet", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  cousin = ifelse(grepl("cousin", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  sroses = ifelse(grepl("sroses", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  strobe = ifelse(grepl("strobe", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  quorom = ifelse(grepl("quorom", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  no_guidelines = ifelse(grepl("None", datafinal$guidelines, ignore.case = T), "Yes", "No"),
+                                  graylit_binary = (ifelse(graylit == "No", "No", "Yes")),
+                                  clinical_trial_binary = (ifelse(clinicaltrial == "No", "No", "Yes")),
+                                  fixedonly = (ifelse(model_used == "Fixed effects", "Yes", "No")),
+                                  randomonly = (ifelse(model_used == "Random effects", "Yes", "No")),
+                                  fixednrandom = (ifelse(model_used == "Fixed effects, Random effects" | model_used == "Mixed effects", "Yes", "No"))
+                                  )
+
+#Fix the pb_present variable
+datafinal$pb_present_fixed <- as.factor(datafinal$pb_present)
+levels(datafinal$pb_present_fixed) <- list(notreported = "Not discussed",
+                                           inconclusive = c("Inconclusive results", "Said relatively little bias, but points were outside the triangle; said they used egger test, but didn't publish result of that test"),
+                                           yespb = c("Yes, found evidence of PB", "different bias for different subgroups", "different levels of bias for different subgroups"), 
+                                           nopb = "No, found no evidence of PB")
+
+#Going to forego parsing the stat_test column because right now it seems like people generally use the same statistics (software like revman automatically calculates the same stats) so I don't know if it will add much to what we're doing right now... although I may change my mind later 
+
+```
+
+##Creating tables of SRs only and SR+MAs only
+```{r}
+SRdata <- datafinal %>% filter(studytype == "Systematic Review only")
+MAdata <- datafinal %>% filter(studytype == "Systematic Review and meta-analysis")
+```
+
+
+##Creating a table for all studies
+```{r}
+
+all_table_vars <- c("Year", "Journal", "studytype", "preregister", "method_assessment", "no_studies", "pb_discussed", "pb_assessed", "language", "handsearch", "graylit_binary", "clinical_trial_binary", "cochrane", "moose", "pico", "prisma", "potsdam", "amstar", "comet", "cousin", "sroses", "strobe", "quorom")
+
+#Let's see if these variables are normal or not
+lapply(datafinal[,"no_studies"], shapiro.test)
+
+alltable <- print(
+  CreateTableOne(vars = all_table_vars, 
+                 data = datafinal, 
+                 includeNA = TRUE), 
+  showAllLevels = T,
+  nonnormal = all_table_vars,
+  width = 1000)
+
+kable(alltable)
+
+```
+
+##Looking at general characteristics split according SR and MA
+```{r}
+all_table_split_vars <- c("Year", "Journal", "preregister", "method_assessment", "no_studies", "pb_discussed", "language", "handsearch", "graylit_binary", "clinical_trial_binary")
+
+
+alltablesplit <- print(
+  CreateTableOne(vars = all_table_split_vars, 
+                 data = datafinal, 
+                 includeNA = TRUE, 
+                 strata = "studytype"), 
+  showAllLevels = T,
+  nonnormal = all_table_split_vars,
+  width = 1000)
+
+kable(alltablesplit)
+
+```
+
+#Table of meta analysis studies only 
+```{r}
+
+MA_vars <- c("Year", "Journal", "no_studies", "preregister", "language", "handsearch", "graylit_binary", "clinical_trial_binary", "method_assessment", "cochrane", "moose", "pico", "prisma", "potsdam", "amstar", "comet", "cousin", "sroses", "strobe", "quorom",  "pb_discussed", "pb_assessed", "begg", "egger", "funnel", "mazumdar", "peter", "failsafeN", "trimfill", "wood", "fo", "pb_present_fixed", "funnel_plot", "fixedonly", "randomonly", "fixednrandom", "random_effects", "random_effects_unexplained", "subgroup", "metaregression","sensitivity")
+
+MAtable <- print(
+  CreateTableOne(vars = MA_vars, 
+                 data = MAdata, 
+                 includeNA = TRUE), 
+  showAllLevels = T,
+  nonnormal = MA_vars,
+  width = 1000)
+
+kable(MAtable)
+
+```
+
+##Looking at studies that assessed publication bias only 
+```{r}
+pb_assessed <- datafinal %>% filter(pb_assessed == "Yes")
+table(pb_assessed$pb_present_fixed)
+table(datafinal$funnel_plot)
+
+PB_vars <- c("Year", "Journal", "no_studies",  "pb_discussed", "pb_assessed", "pb_present_fixed", "mazumdar", "begg", "egger", "funnel", "peter", "failsafeN", "trimfill", "wood", "fo", "pb_present_fixed", "funnel_plot", "fixedonly", "randomonly", "fixednrandom", "random_effects", "random_effects_unexplained", "subgroup", "metaregression","sensitivity")
+
+PBtable <- print(
+  CreateTableOne(vars = PB_vars, 
+                 data = pb_assessed, 
+                 includeNA = TRUE), 
+  showAllLevels = T,
+  nonnormal = PB_vars,
+  width = 1000)
+
+kable(PBtable)
+
+```
+
+##Plots and figures for the paper 
+```{r}
+library(ggplot2)
+library(wesanderson)
+library(viridis)
+
+ggplot(datafinal, aes(x=no_studies,color=studytype, fill=studytype)) +
+  geom_density(alpha = 0.5) +
+  scale_color_manual(name = "Study Type", labels = c("SR and MA", "SR only"), values=wes_palette("Darjeeling1", n = 2)) +
+  scale_fill_manual(name = "Study Type", labels = c("SR and MA", "SR only"), values=wes_palette("Darjeeling1", n = 2)) +
+  xlab("Number of Studies") + 
+  ylab("Density") +
+  theme_minimal()
+
+ggplot(datafinal, aes(x = no_studies, y = factor(studytype, labels = c("SR and MA", "SR Only")))) +
+  geom_boxplot(size=1,
+               outlier.shape = 1,
+               outlier.color = "black",
+               outlier.size  = 3) +
+  geom_jitter(alpha = 0.5, 
+              width=.2) + 
+  theme_minimal() + 
+  xlab("Number of Studies") +
+  ylab("Study Type") +
+  scale_x_continuous(breaks = seq(0, 300, 20))
+
+```
+
+##Determining which studies to use for post-hoc examination for pub bias
+```{r}
+
+#Looking at MA studies that did not assesss PB themselves and evaluated at least 10 studies
+MAanalyze <- MAdata %>% filter(pb_assessed == "No")
+
+MAanalyze <- MAanalyze %>% filter(no_studies > 10)
+
+#Creating a csv of these studies for Shannon to collect data 
+#forshannon <- MAanalyze %>% select(ID, Year, Journal, no_studies)
+#write.csv(forshannon, "/Users/mona/Desktop/Research/Publication Bias/forshannon.csv")
+
+#We have a list of studies with sufficient data that has been collected
+#I went through each study and collected the individual study data; this is an excel file with 20 sheets, each sheet representing a study's data 
+```
+
+## Post hoc assessment
+## Testing it out
+
+```{r}
+
+##Need to correct SE for odds ratio
+# A 95% confidence interval for the log odds ratio is obtained as 1.96 standard errors on either side of the estimate. For the example, the log odds ratio is loge(4.89)=1.588 and the confidence interval is 1.588±1.96×0.103, which gives 1.386 to 1.790. We can antilog these limits to give a 95% confidence interval for the odds ratio itself,2 as exp(1.386)=4.00 to exp(1.790)=5.99. The observed odds ratio, 4.89, is not in the centre of the confidence interval because of the asymmetrical nature of the odds ratio scale. For this reason, in graphs odds ratios are often plotted using a logarithmic scale. The odds ratio is 1 when there is no relationship. We can test the null hypothesis that the odds ratio is 1 by the usual χ2 test for a two by two table.
+#https://stackoverflow.com/questions/63106936/why-i-am-getting-different-95-confidence-interval-for-some-studies-in-meta-anal
+#How to calculate SE from log OR: https://www.ncbi.nlm.nih.gov/pmc/articles/PMC1127651/
+
+##Need to correct SE for MD
+##Need to correct SE for RR
+##Need to correct SE for proportional data and rate data 
+
+
+#Ok i have to build a function for this
+post_hoc_or <- function(){
+  print("Meta package")
+  test1 <- metagen(test_measure, test_se, sm = "OR")
+  taf1 <- meta::trimfill(test1)
+  meta::funnel(taf1, legend = T)
+  print(taf1)
+  copas(taf1)
+}
+
+#Meta package is better to use instead of metafor, because if you use metafor you have to exponentiate the estimate to get the odds ratio. And the meta package has functions for copas selection models.
+#For studies reporting a proportion, will have to use metaprop function
+#METAPROP, METACOR, METAGEN, METAINC for INC RATE DATA
+#For ODDS RATIOS, need to convert to LOG ODDS
+
+#https://archpublichealth.biomedcentral.com/articles/10.1186/2049-3258-72-39
+#https://stackoverflow.com/questions/43802902/meta-analysis-of-prevalence-rates-in-r
+
+```
+
+##Creating Eggers Test function
+
+```{r}
+eggers.test = function(x) {
+    # Validate
+    x = x
+    if (x$k < 10) {
+        warning(paste("Your meta-analysis contains k =",
+                      x$k, "studies. Egger's test may lack the statistical power to detect bias when the number of studies is small (i.e., k<10)."))
+    }
+    if (class(x)[1] %in% c("meta", "metabin", "metagen", "metacont", "metacor", "metainc", "metaprop")) {
+        # Conduct metabias
+        eggers = meta::metabias(x, k.min = 3, method = "linreg")
+        # Get Intercept
+        intercept = as.numeric(eggers$estimate[1])
+        # Get SE
+        se = as.numeric(eggers$estimate[2])
+        # Calculate 95CI
+        llci = intercept - qnorm(0.975) * se
+        ulci = intercept + qnorm(0.975) * se
+        # Get t
+        t = as.numeric(eggers$statistic)
+        # Get df
+        df = as.numeric(eggers$parameters)
+        # Get p
+        p = as.numeric(eggers$p.value)
+        # Make df
+        returnlist = list(intercept = intercept,
+                          llci = llci,
+                          ulci = ulci,
+                          t = t,
+                          p = p,
+                          meta.obj = x)
+    } else {
+        stop("x must be of type 'metabin', 'metagen', 'metacont', 'metainc' or 'metaprop'")
+    }
+    class(returnlist) = "eggers.test"
+    return(returnlist)
+
+}
+```
+
+##Post hoc assessment one study at a time
+
+```{r}
+#Unfortunately, it is hard for me to automate the post hoc assessment given the heterogeneity of the studies. I have to do it one study at a time. This is alright because it's only 20 studies.
+
+library(meta)
+study_1 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 1)
+
+#This is a study for proportion 
+print("Meta package")
+test1 <- metaprop(EventRate, 
+                  n = Num, 
+                  studlab = Study, 
+                  data = study_1, 
+                  #incr = 0.5, 
+                  #method.incr = "all", 
+                  sm = "PLOGIT", 
+                  random = TRUE, 
+                  backtransf = TRUE,
+                  method.bias = "Egger", 
+                  method.ci = "NAsm")
+taf1 <- meta::trimfill(test1, backtransf = TRUE)
+meta::funnel(taf1, legend = T, backtransf = TRUE)
+print(taf1)
+copas1 <- copas(test1, left = TRUE, backtransf = TRUE) #Will need to manually backtransfer
+copas1
+#summary.copas(copas1)
+
+#Create a function to back transform for plogit after obtaining estimate in Copas selection models
+logit2prop <- function(logit){
+  plogit <- exp(logit)
+  prop <- plogit / (1 + plogit)
+  return(prop)
+}
+
+#IT WORKED!!!!!!
+
+#Let's also do Egger's regression 
+metabias(test1, method.bias = "linreg")
+eggers.test(test1)
+
+```
+
+##Post hoc study 2
+
+```{r}
+
+study_2 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 2)
+
+#This is a study for proportion 
+print("Meta package")
+test2 <- metaprop(EventRate, 
+                  n = Num, 
+                  studlab = Study, 
+                  data = study_2, 
+                  #incr = 0.5, 
+                  #method.incr = "all", 
+                  sm = "PLOGIT", 
+                  random = TRUE, 
+                  backtransf = TRUE,
+                  method.bias = "Egger",
+                  method.ci = "NAsm")
+
+taf2 <- meta::trimfill(test2, backtransf = TRUE)
+meta::funnel(taf2, legend = T, backtransf= TRUE)
+print(taf2)
+copas2 <- copas(test2, left = TRUE, backtransf = TRUE) #Will need to manually backtransfer
+copas2
+logit2prop(-1.4007)
+logit2prop(-1.8855)
+logit2prop(-0.9158)
+metabias(test2, method.bias = "linreg")
+eggers.test(test2)
+
+#We did the first two and they worked. Now let's make a function
+
+bias_prop <- function(x){
+  study <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = x)
+  test <- metaprop(EventRate, 
+                   n = Num, 
+                   studlab = Study, 
+                   data = study, 
+                   #incr = 0.5, 
+                   #method.incr = "all", 
+                   sm = "PLOGIT", 
+                   random = TRUE, 
+                   backtransf = TRUE,
+                   method.bias = "Egger",
+                   method.ci = "NAsm")
+  taf <- meta::trimfill(test, backtransf = TRUE)
+  meta::funnel(taf, legend = T, backtransf = TRUE)
+  print("TRIM AND FILL")
+  print(taf)
+  print("COPAS MODEL")
+  print(copas(test))
+  print("EGGERS TEST")
+  metabias(test, method.bias = "linreg")
+  eggers.test(test)
+}
+
+#Back transform a proportion
+logit2prop(2.0000)
+logit2prop(1.1102)
+logit2prop(2.8899)
+
+```
+
+##Post hoc study 3
+
+```{r}
+
+study_3 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 3)
+
+#This is a study for a binary event with RRs
+
+print("Meta package")
+test3.1 <- metabin(EventGroup1, 
+                  Group1Tot,
+                  EventGroup2,
+                  Group2Tot,
+                  studlab = Study, 
+                  data = study_3, 
+                  #incr = 0.5, 
+                  #method.incr = "all", 
+                  sm = "RR", 
+                  random = TRUE, 
+                  method.bias = "Egger")
+
+taf3.1 <- meta::trimfill(test3.1)
+meta::funnel(taf3.1, legend = T)
+print(taf3.1)
+copas(test3.1)
+metabias(test3.1, method.bias = "linreg")
+eggers.test(test3.1)
+
+```
+
+##Post hoc study 4
+
+```{r}
+study_4 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 4)
+
+bias_prop(4)
+
+#Logit to prop are taken from the adjusted estimate of the copas selection model
+logit2prop(2.0000 )
+logit2prop(1.1102)
+logit2prop(2.8899)
+
+```
+
+##Post hoc study 5
+
+```{r}
+study_5 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 5)
+
+test5 <- metagen(MD,
+                 studlab = Study,
+                 data = study_5,
+                 random = TRUE,
+                 sm = "MD",
+                 lower = LCI,
+                 upper = UCI,
+                 method.bias = "Egger")
+
+taf5 <- meta::trimfill(test5)
+meta::funnel(taf5, legend = T)
+print(taf5)
+copas(test5)
+metabias(test5, method.bias = "linreg")
+eggers.test(test5)
+
+```
+
+##Post hoc study 6
+
+```{r}
+study_6 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 6)
+
+bias_prop(6)
+
+#Back transform 
+#Logit to prop are taken from the adjusted estimate of the copas selection model
+logit2prop(-2.8001 )
+logit2prop(-3.6077)
+logit2prop(-1.9925)
+
+```
+
+##Post hoc study 7
+
+```{r}
+study_7 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 7)
+
+bias_prop(7)
+#Copas models did not work --> values approaching large numbers 
+#Can't back transform and NA -- this value will be NA in the study 
+```
+
+##Post hoc study 8
+
+```{r}
+
+study_8 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 8)
+
+#This is a study for a binary event with RRs
+#The authors used fixed effects model so we will too
+
+print("Meta package")
+test8.1 <- metabin(EventGroup1, 
+                  Group1Tot,
+                  EventGroup2,
+                  Group2Tot,
+                  studlab = Study, 
+                  data = study_8, 
+                  #incr = 0.5, 
+                  #method.incr = "all", 
+                  sm = "RR", 
+                  method = "MH",
+                  common = TRUE,
+                  random = FALSE, 
+                  method.bias = "Egger")
+
+taf8.1 <- meta::trimfill(test8.1, common = TRUE, random = FALSE)
+meta::funnel(taf8.1, legend = T)
+print(taf8.1)
+copas(test8.1)
+metabias(test8.1, method.bias = "linreg")
+eggers.test(test8.1)
+
+```
+
+##Post hoc study 9
+
+```{r}
+study_9 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 9)
+
+print("Meta package")
+test9.1 <- metabin(NonQAEvent, 
+                  NonTotal,
+                  QAEvent,
+                  Total,
+                  studlab = Study, 
+                  data = study_9, 
+                  #incr = 0.5, 
+                  #method.incr = "all", 
+                  sm = "RR", 
+                  random = TRUE, 
+                  method.bias = "Egger")
+
+taf9.1 <- meta::trimfill(test9.1)
+meta::funnel(taf9.1, legend = T)
+print(taf9.1)
+copas(test9.1)
+metabias(test9.1, method.bias = "linreg")
+eggers.test(test9.1)
+
+```
+
+##Post hoc study 10
+
+```{r}
+
+study_10 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 10)
+
+bias_prop(10)
+
+#Back transform the logit proportion from the adjusted estimate of the Copas selection model
+logit2prop(-0.6)
+logit2prop(-1.2966)
+logit2prop(0.0965)
+
+```
+
+##Post hoc study 11
+
+```{r}
+
+study_11 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 11)
+
+test11 <- metagen(MD,
+                 studlab = Study,
+                 data = study_11,
+                 random = TRUE,
+                 sm = "MD",
+                 lower = LCI,
+                 upper = UCI,
+                 method.bias = "Egger")
+
+taf11 <- meta::trimfill(test11)
+meta::funnel(taf11, legend = T)
+print(taf11)
+copas(test11)
+metabias(test11, method.bias = "linreg")
+eggers.test(test11)
+
+```
+
+##Post hoc study 12
+
+```{r}
+
+study_12 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 12)
+
+bias_prop(12)
+
+#Back transform 
+logit2prop(-0.8174)
+logit2prop(-1.0020)
+logit2prop(-0.6328)
+
+```
+
+##Post hoc study 13
+
+```{r}
+
+study_13 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 13)
+
+bias_prop(13)
+
+#Back transform
+logit2prop(-0.8174)
+logit2prop(-1.0020)
+logit2prop(-0.6328)
+
+```
+
+##Post hoc study 14
+
+```{r}
+
+study_14 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 14)
+
+test14 <- metagen(log(OR),
+                 studlab = Study,
+                 data = study_14,
+                 random = TRUE,
+                 sm = "OR",
+                 lower = log(LCI),
+                 upper = log(UCI),
+                 method.bias = "Egger", 
+                 backtransf = TRUE)
+
+taf14 <- meta::trimfill(test14, random = TRUE, backtransf = TRUE)
+meta::funnel(taf14, legend = T)
+print(taf14)
+copas(test14)
+metabias(test14, method.bias = "linreg")
+eggers.test(test14)
+
+```
+
+##Post hoc study 15
+
+```{r}
+study_15 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 15)
+
+test15 <- metagen(log(OR),
+                 studlab = Study,
+                 data = study_15,
+                 random = TRUE,
+                 sm = "OR",
+                 lower = log(LCI),
+                 upper = log(UCI),
+                 level.ci = 0.95,
+                 common = TRUE,
+                 overall = TRUE,
+                 method.bias = "Egger",
+                 backtransf = TRUE)
+
+taf15 <- meta::trimfill(test15, common = TRUE, backtransf = T)
+meta::funnel(taf15, legend = T)
+print(taf15)
+copas(test15)
+metabias(test15, method.bias = "linreg")
+eggers.test(test15)
+
+#Let's try this another way
+
+print("Meta package")
+test15.2 <- metabin(DVEvent,
+                  DVTotal,
+                  SVEvent, 
+                  SVTotal,
+                  studlab = Study, 
+                  data = study_15, 
+                  #incr = 0.5, 
+                  #method.incr = "all", 
+                  sm = "OR",
+                  method = "MH",
+                  common = TRUE, 
+                  method.bias = "Egger", 
+                  allstudies = TRUE,
+                  backtransf = TRUE)
+
+test15.2
+
+taf15.2 <- meta::trimfill(test15.2, left = FALSE, sm = "OR", ma.common = TRUE, common = TRUE, backtransf = TRUE, pscale = 1)
+meta::funnel(taf15.2, legend = T)
+print(taf15.2)
+copas(test15.2, backtransf = T)
+metabias(test15.2, method.bias = "linreg")
+eggers.test(test15.2)
+
+```
+
+##Post hoc study 16
+
+```{r}
+study_16 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 16)
+
+test16 <- metagen(log(OR),
+                 studlab = Study,
+                 data = study_16,
+                 sm = "OR",
+                 lower = log(LCI),
+                 upper = log(UCI),
+                 common = TRUE,
+                 overall = TRUE,
+                 method.bias = "Egger",
+                 backtransf = TRUE)
+
+taf16 <- meta::trimfill(test16, common = TRUE, backtransf = T)
+meta::funnel(taf16, legend = T)
+print(taf16)
+copas(test16)
+metabias(test16, method.bias = "linreg")
+eggers.test(test16)
+
+```
+
+##Post hoc study 17
+
+```{r}
+
+study_17 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 17)
+
+test17 <- metagen(log(OR),
+                 studlab = Study,
+                 data = study_17,
+                 random = TRUE,
+                 sm = "OR",
+                 lower = log(LCI),
+                 upper = log(UCI),
+                 method.bias = "Egger",
+                 backtransf = TRUE)
+
+taf17 <- meta::trimfill(test17, backtransf = T)
+meta::funnel(taf17, legend = T)
+print(taf17)
+copas(test17)
+metabias(test17, method.bias = "linreg")
+eggers.test(test17)
+
+test17.2 <- metabin(TREvent,
+                  TRTotal,
+                  TEEvent, 
+                  TETotal,
+                  studlab = Study, 
+                  data = study_17, 
+                  incr = 0.5, 
+                  method.incr = "all", 
+                  sm = "OR",
+                  #method = "MH",
+                  common = TRUE, 
+                  method.bias = "Egger", 
+                  allstudies = TRUE,
+                  backtransf = TRUE)
+
+test17.2
+
+taf17.2 <- meta::trimfill(test17.2, left = FALSE, sm = "OR", ma.common = TRUE, common = TRUE, backtransf = TRUE, pscale = 1)
+meta::funnel(taf17.2, legend = T)
+print(taf17.2)
+copas(test17.2, backtransf = T)
+metabias(test17.2, method.bias = "linreg")
+eggers.test(test17.2)
+
+```
+
+##Post hoc study 18
+
+```{r}
+
+study_18 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 18)
+
+test18 <- metagen(log(OR),
+                 studlab = Study,
+                 data = study_18,
+                 random = TRUE,
+                 sm = "OR",
+                 lower = log(LCI),
+                 upper = log(UCI),
+                 method.bias = "Egger",
+                 backtransf = TRUE)
+
+taf18 <- meta::trimfill(test18)
+meta::funnel(taf18, legend = T)
+print(taf18)
+copas(test18, backtransf = T)
+metabias(test18, method.bias = "linreg")
+eggers.test(test18)
+
+
+```
+
+##Post hoc study 19
+
+```{r}
+
+study_19 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 19)
+
+test19 <- metagen(log(OR),
+                 studlab = Study,
+                 data = study_19,
+                 random = TRUE,
+                 sm = "OR",
+                 lower = log(LCI),
+                 upper = log(UCI),
+                 method.bias = "Egger",
+                 backtransf = T)
+
+taf19 <- meta::trimfill(test19)
+meta::funnel(taf19, legend = T)
+print(taf19)
+copas(test19, backtransf = T)
+metabias(test19, method.bias = "linreg")
+eggers.test(test19)
+
+```
+
+##Post hoc study 20
+
+```{r}
+
+study_20 <- readxl::read_excel("/Users/mona/Desktop/Research/Publication Bias/Data/posthoc_foranalysis_copy10232022.xls", sheet = 20)
+
+test20 <- metagen(log(OR),
+                 studlab = Study,
+                 data = study_20,
+                 random = TRUE,
+                 sm = "OR",
+                 lower = log(LCI),
+                 upper = log(UCI),
+                 common = TRUE,
+                 method.bias = "Egger", 
+                 allstudies = TRUE,
+                 backtransf = TRUE)
+
+taf20 <- meta::trimfill(test20, common = TRUE)
+meta::funnel(taf20, legend = T)
+print(taf20)
+copas(test20, backtransf = TRUE)
+metabias(test20, method.bias = "linreg")
+eggers.test(test20)
+
+
+```
+
+##Building a Venn Diagram with Post-Hoc Results 
+
+```{r}
+library("ggVennDiagram")                                   
+library(RColorBrewer)
+
+#We will use study author names
+set1 <- c("Pedreira", "Shin", "Hallberg", "Krastev", "Nagori", "Pekala", "Zarzecki", "Panayi", "Yu", "Alolabi", "Slump", "Shin", "Broekstra", "Khavanin", "Walker", "Singh")
+set2 <- c("Pedreira", "Krastev", "Pekala", "Zarzecki", "Yu", "Alolabi", "Shin", "Broekstra", "Walker")
+set3 <- c("Pedreira", "Shin", "Hallberg", "Krastev", "Pekala", "Zarzecki", "Yu", "Alolabi", "Bruloy", "Shin", "Broekstra")
+set4 <- c("Riot", "Al-Moraissi", "Chaput")
+
+paletteblack <- c("#000000", "#000000", "#000000")
+
+ggVennDiagram(list(set1, set2, set3), category.names = c("Trim-and-fill", "Egger's", "Copas"), label = "count", set_size = 5, label_size = 8)+
+  scale_fill_distiller(palette= "Pastel2", guide = "none") + 
+  scale_color_manual(values = paletteblack, guide = "none") +
+  ggtitle("Post-Hoc Assessments of Studies with Any PB (n=17)") + 
+  coord_sf(clip = "off")
+
+```
+
