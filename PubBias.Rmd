@@ -129,6 +129,7 @@ levels(datafinal$pb_present_fixed) <- list(notreported = "Not discussed",
 ```{r}
 SRdata <- datafinal %>% filter(studytype == "Systematic Review only")
 MAdata <- datafinal %>% filter(studytype == "Systematic Review and meta-analysis")
+
 ```
 
 
@@ -907,6 +908,196 @@ ggVennDiagram(list(set1, set2, set3), category.names = c("Trim-and-fill", "Egger
   scale_color_manual(values = paletteblack, guide = "none") +
   ggtitle("Post-Hoc Assessments of Studies with Any PB (n=17)") + 
   coord_sf(clip = "off")
+
+```
+
+#Raw Data for Cohen's Kappa 
+
+```{r}
+
+filepath1 <- "/Users/mona/Desktop/Research/Publication Bias/Data/raw_bias_0316.xlsx"
+rawdata <- readxl::read_excel(filepath1)
+
+```
+
+#Cleaning up raw table a little 
+```{r}
+
+#Clean up some variables we don't need
+
+toremove <- c("29. Please provide any remaining comments about this article.", 
+              "Timestamp", 
+              "3. Please flag any of the following issues that prevent you from coding this article:", 
+              "4. Year of publication",
+              "5. Journal")
+
+rawdata <- select(rawdata, -toremove)
+names(rawdata)[1] <- "coder"
+names(rawdata)[2] <- "id"
+names(rawdata)[12] <- "pb_present"
+names(rawdata)[15] <- "guidelines"
+names(rawdata)[18] <- "graylit"
+names(rawdata)[19] <- "clinicaltrial"
+names(rawdata)[23] <- "model_used"
+
+#Fixing some variables
+rawdata$pb_present_fixed <- as.factor(rawdata$pb_present)
+levels(rawdata$pb_present_fixed) <- list(notreported = "Not discussed",
+                                           inconclusive = c("Inconclusive results", "Said relatively little bias, but points were outside the triangle; said they used egger test, but didn't publish result of that test"),
+                                           yespb = c("Yes, found evidence of PB", "different bias for different subgroups", "different levels of bias for different subgroups"), 
+                                           nopb = "No, found no evidence of PB")
+
+
+rawdata <- rawdata %>% mutate(no_guidelines = ifelse(grepl("None", rawdata$guidelines, ignore.case = T), "Yes", "No"),
+                                  graylit_binary = (ifelse(graylit == "No", "No", "Yes")),
+                                  clinical_trial_binary = (ifelse(clinicaltrial == "No", "No", "Yes")),
+                                  fixedonly = (ifelse(model_used == "Fixed effects", "Yes", "No")),
+                                  randomonly = (ifelse(model_used == "Random effects", "Yes", "No")),
+                                  fixednrandom = (ifelse(model_used == "Fixed effects, Random effects" | model_used == "Mixed effects", "Yes", "No"))
+                                  )
+
+```
+
+#Separate data into leila and shannon
+```{r}
+rawdata_sw <- rawdata %>% filter(coder == "SW")
+rawdata_lk <- rawdata %>% filter(coder == "LK")
+```
+
+#Actually calculating Cohen's Kappa
+```{r}
+library("vcd")
+library(psych)
+
+table_test <- table(rawdata_sw$`9. Was this study pre-registered?`, rawdata_lk$`9. Was this study pre-registered?`)
+kappa_test <- Kappa(table_test)
+confint(kappa_test)
+print(kappa_test, CI = TRUE)
+
+#Verifying this by calculating manually
+
+diagonal.counts <- diag(table_test)
+N <- sum(table_test)
+row.marginal.props <- rowSums(table_test)/N
+col.marginal.props <- colSums(table_test)/N
+Po <- sum(diagonal.counts)/N
+Pe <- sum(row.marginal.props*col.marginal.props)
+k <- (Po - Pe)/(1 - Pe)
+k
+
+#One more function
+cohen.kappa(table_test)
+
+#They all agree 
+```
+
+#Calculating Cohen's Kappa for the remaining variables
+
+```{r}
+
+#Tried to create a for loop multiple times and failed.
+# 
+# for (i in 1:ncol(rawdata_sw)){
+#   table <- table(rawdata_sw[,i], rawdata_lk[,i])
+#   kappa <- Kappa(table)
+#   print(kappa, CI = TRUE)
+# }
+# 
+# for (i in 1:ncol(rawdata)){
+#   data_sw <- rawdata %>% filter(coder == "SW")
+#   data_lk <- rawdata %>% filter(coder == "LK")
+#   table <- table(data_sw[,i], data_lk[,i])
+#   kappa <- Kappa(table)
+#   print(kappa, CI = TRUE)
+# }
+
+#Will have to do this manually unfortunately 
+
+table <- table(rawdata_sw$`6. Study qualifies for inclusion`, rawdata_lk$`6. Study qualifies for inclusion`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+diagonal.counts <- diag(table)
+N <- sum(table)
+row.marginal.props <- rowSums(table)/N
+col.marginal.props <- colSums(table)/N
+Po <- sum(diagonal.counts)/N
+Pe <- sum(row.marginal.props*col.marginal.props)
+k <- (Po - Pe)/(1 - Pe)
+k
+
+table <- table(rawdata_sw$`8. Study type`, rawdata_lk$`8. Study type`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`9. Was this study pre-registered?`, rawdata_lk$`9. Was this study pre-registered?`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`10. Was a methodological assessment done?`, rawdata_lk$`10. Was a methodological assessment done?`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`11. Publication Bias Discussed`, rawdata_lk$`11. Publication Bias Discussed`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`12. Publication Bias Assessed`, rawdata_lk$`12. Publication Bias Assessed`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$pb_present_fixed, rawdata_lk$pb_present_fixed)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`15. Funnel plot published in the systematic review`, rawdata_lk$`15. Funnel plot published in the systematic review`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+# table <- table(rawdata_sw$`16. Number of studies analyzed`, rawdata_lk$`16. Number of studies analyzed`)
+# kappa <- Kappa(table)
+# print(kappa, CI = TRUE)
+# 
+# table <- table(rawdata_sw$`17. Guidelines followed`, rawdata_lk$`17. Guidelines followed`)
+# kappa <- Kappa(table)
+# print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`18. Foreign languages searched`, rawdata_lk$`18. Foreign languages searched`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`19. Hand search of references carried out`, rawdata_lk$`19. Hand search of references carried out`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$graylit_binary, rawdata_lk$graylit_binary)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$clinical_trial_binary, rawdata_lk$clinical_trial_binary)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+# table <- table(rawdata_sw$`22. Statistical Test Used to Evaluate Heterogeneity`, rawdata_lk$`22. Statistical Test Used to Evaluate Heterogeneity`)
+# kappa <- Kappa(table)
+# print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$model_used, rawdata_lk$model_used)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`26. Was sub-group analysis conducted?`, rawdata_lk$`26. Was sub-group analysis conducted?`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`27. Was a meta-regression conducted?`, rawdata_lk$`27. Was a meta-regression conducted?`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
+table <- table(rawdata_sw$`28. Was a sensitivity analysis conducted?`, rawdata_lk$`28. Was a sensitivity analysis conducted?`)
+kappa <- Kappa(table)
+print(kappa, CI = TRUE)
+
 
 ```
 
